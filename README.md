@@ -1,2 +1,5 @@
-# XFLR5analysis
-give a python version of XFLR5 analysis part. 
+# UAVanalysis
+
+First plan is to implements analysis function in XFLR5 with python.
+
+√ nonlinear lifting line theory part
