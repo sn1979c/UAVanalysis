@@ -1,3 +1,4 @@
+from ast import Raise
 import numpy as np
 import numpy.linalg as lg
 import pandas as pd
@@ -9,7 +10,7 @@ from scipy import integrate
 import time
 import sko.GA
 # s_NLLTStations + 1 points(including end point)
-s_NLLTStations = 25
+s_NLLTStations = 20
 s_RelaxMax = 8
 s_IterLim = 100
 
@@ -82,43 +83,7 @@ class LLTAnalysis:
             w[i] = integrate.trapz(dw, zs)
         return w
 
-    def set_linear_solution(self, alpha):
-        a = np.zeros((s_NLLTStations, s_NLLTStations))
-        rhs = np.zeros(s_NLLTStations)
-        alpha_L0 = np.zeros(s_NLLTStations)
-        for i in range(1, s_NLLTStations):
-            degs = np.linspace(-5, 5, 10)
-            cl = np.ones(len(degs))
-            for j in range(len(degs)):
-                # print(self.re)
-                cl[j] = self.get_aero_data(self.z[i], self.re[i], degs[j])[0]
-            f = interpolate.interp1d(cl, degs)
-            alpha_L0[i] = f(0)
-
-        for i in range(1, s_NLLTStations):
-            t0 = i * np.pi / s_NLLTStations
-            st0 = np.sin(t0)
-
-            for j in range(1, s_NLLTStations):
-                snt0 = np.sin(j * t0)
-                a[i, j] = (2 * self.span) / (np.pi * self.chord[i]) * snt0 + j * snt0 / st0
-            rhs[i] = (alpha - alpha_L0[i] + self.twist[i]) / 180 * np.pi
-        rhs[1:s_NLLTStations] = solve(a[1:s_NLLTStations, 1:s_NLLTStations], rhs[1:s_NLLTStations])
-
-        for i in range(1, s_NLLTStations):
-            t0 = i * np.pi / s_NLLTStations
-            # y = np.cos(t0)
-            self.Cl[i] = 0
-            for j in range(1, s_NLLTStations):
-                snt0 = np.sin(j * t0)
-                self.Cl[i] = self.Cl[i] + rhs[j] * snt0
-            self.Cl[i] *= 2*self.span/(np.pi*self.chord[i]) * 2 * np.pi
-            self.Ai[i] = self.Cl[i] / (2 * np.pi) * 180 / np.pi - (alpha + self.twist[i] - alpha_L0[i])
-
-        # for k in range(1, s_NLLTStations):
-        #     print('k = {:d}, Cl = {:.5f}, Ai = {:.5f}'.format(k, self.Cl[k], self.Ai[k]))
-
-    def iter_nonlinear_solution(self, Alpha):
+    def iter_nonlinear_solution(self, Alpha, edgePoint='estimate'):
         s_CvPrec = 0.01
         iter = 0
 
@@ -132,21 +97,22 @@ class LLTAnalysis:
                 self.Cl[i] = self.get_aero_data(self.z[i], self.re[i], Alpha + self.Ai[i] + self.twist[i])[0]
                 # self.Cl[i] = 2*np.pi*(Alpha + self.Ai[i] + self.twist[i] - alpha_L0) / 180 * np.pi
             # time1 = time.time() - time1
-
-            # plt.plot(self.theta[1:s_NLLTStations], self.Cl[1:s_NLLTStations])
-            # plt.show()
             # time2 = time.time()
             for k in range(1, s_NLLTStations):
                 a = self.Ai[k]
                 anext = - np.sum(self.beta[1:, k] * self.Cl[1:] * self.chord[1:] / self.span)
                 self.Ai[k] = a + (anext-a) / s_RelaxMax
                 m_Maxa = np.max([m_Maxa, np.abs(a-anext)])
-            # time2 = time.time() - time2
-            # print('time1={}, time2={}'.format(time1, time2))
-            while abs(self.Cl[0]) > 1e-5:
-                self.Ai[0] -= self.Cl[0] / (2 * np.pi) * 180 / np.pi * 0.5
-                self.Cl[0] = self.get_aero_data(self.z[0], self.re[0], Alpha + self.Ai[0] + self.twist[0])[0]
-                # print(self.Ai[0])
+            # calculate explicitly
+
+            # estimate edge point
+            if edgePoint == 'estimate':
+                self.Ai[0] = - self.get_aero_data(self.z[0], self.re[0], Alpha + self.twist[0])[0]  / (2 * np.pi) * 180 / np.pi * 0.5
+                self.Cl[0] = 0
+            else:
+                while abs(self.Cl[0]) > 1e-5:
+                    self.Ai[0] -= self.Cl[0] / (2 * np.pi) * 180 / np.pi * 0.5
+                    self.Cl[0] = - self.get_aero_data(self.z[0], self.re[0], Alpha + self.Ai[0] + self.twist[0])[0]
 
             if (m_Maxa < s_CvPrec):
                 break
@@ -236,10 +202,10 @@ class LLTAnalysis:
         plt.show()
 
     def read_aero_data(self):
-        file_names = os.listdir('./foil_data')
+        file_names = os.listdir('./src/foil_data')
         # print(file_names)
         for name in file_names:
-            foil_data = pd.read_csv('./foil_data/' + name)
+            foil_data = pd.read_csv('./src/foil_data/' + name)
             foil_name, re = name[:-4].split(sep='-')
             # print(self.foil_names_re)
             re = float(re[:-1]) * 10000
@@ -274,25 +240,26 @@ class LLTAnalysis:
             data = (foil1_data - foil0_data) / (z1 - z0) * (z - z0) + foil0_data
         return data
 
-    # 将翼型的气动力数据-攻角曲线以re为坐标作线性插值，并返回alpha对应的数据
     def get_foil_from_alpha(self, foil, re, alpha):
+        # interpolate aero_data from re and alpha data
+        # input 
+        # foil: foil_name
+        # re:Reynolds number to be interpolated, 
+        # alpha:Reynolds number to be interpolated
+        # Return:
+        # np.array([cl, cd, cm])
         foil_re = self.foil_names_re[foil].copy()
         foil_re.append(re)
         foil_re.sort()
         index = foil_re.index(re)
 
         if (index == 0) | (index == len(foil_re)-1):
-            # print('re={}'.format(re))
-            # print(foil + 'too less point')
-            foil_data = 0
+            raise ValueError('Re is out of Bounds, calculate more re points')
         else:
-            # time1 = time.time()
             data_left = self.foil_data_set[foil + '-' + str(int(foil_re[index-1]/10000))+'w']
             data_right = self.foil_data_set[foil + '-' + str(int(foil_re[index+1]/10000))+'w']
             deg_left = np.array(data_left['deg'])
             deg_right = np.array(data_right['deg'])
-
-            # time2 = time.time()
 
             f1 = interpolate.interp1d(deg_left, np.array(data_left['cl']))
             f2 = interpolate.interp1d(deg_left, np.array(data_left['cd']))
@@ -300,22 +267,20 @@ class LLTAnalysis:
             f4 = interpolate.interp1d(deg_right, np.array(data_right['cl']))
             f5 = interpolate.interp1d(deg_right, np.array(data_right['cd']))
             f6 = interpolate.interp1d(deg_right, np.array(data_right['cm']))
-            # f7 = interpolate.interp1d(deg_left, np.array(data_left['cd_pressure']))
-            # f8 = interpolate.interp1d(deg_left, np.array(data_left['cd_viscous']))
-            # f9 = interpolate.interp1d(deg_right, np.array(data_right['cd_pressure']))
-            # f10 = interpolate.interp1d(deg_right, np.array(data_right['cd_viscous']))
-            # time2 = time.time() - time2
-            foil_re_left = np.array([f1(alpha), f2(alpha), f3(alpha)])
-            foil_re_right = np.array([f4(alpha), f5(alpha), f6(alpha)])
+            try:
+                foil_re_left = np.array([f1(alpha), f2(alpha), f3(alpha)])
+                foil_re_right = np.array([f4(alpha), f5(alpha), f6(alpha)])
+                foil_data = foil_re_left + (foil_re_right - foil_re_left) / (
+                        foil_re[index+1] - foil_re[index-1]) * (re - foil_re[index-1])
+                return foil_data
+            except ValueError as e:
+                print(deg_left)
+                print(deg_right)
+                raise ValueError('alpha={:.2f} is out of bounds'.format(alpha))
 
-            foil_data = foil_re_left + (foil_re_right - foil_re_left) / (
-                    foil_re[index+1] - foil_re[index-1]) * (re - foil_re[index-1])
-            # time1 = time.time() - time1
-            # print('time1={},time2={}'.format(time1, time2))
-        return foil_data
 
     def read_wing_settings(self, wing_name):
-        wing = pd.read_csv('.\\wing_def\\{}'.format(wing_name))
+        wing = pd.read_csv('.\\src\\wing_def\\{}'.format(wing_name))
         index = len(wing)
         wing = wing.append(wing[wing['z'] > 0], ignore_index=True)
         wing.loc[index:, 'z'] = - wing.loc[index:, 'z']
@@ -343,8 +308,9 @@ class LLTAnalysis:
             self.atmos['rho'] = a['density']
             self.atmos['nu'] = a['dynamicViscosity']
         self.re = self.atmos['rho'] * self.atmos['v'] * self.chord / self.atmos['nu']
+        print(self.re)
         # main_start = time.time()
-        self.set_linear_solution(alpha)
+        # self.set_linear_solution(alpha)
         self.iter_nonlinear_solution(alpha)
         # main_end = time.time()
         # main_consume = str(main_end - main_start)
